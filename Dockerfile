@@ -1,5 +1,10 @@
 FROM python:3.11-slim
 
+# Устанавливаем переменные окружения для оптимизации
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PORT=8000
+
 WORKDIR /app
 
 COPY requirements.txt .

@@ -5,9 +5,10 @@
   },
   "deploy": {
     "startCommand": "python start_server.py",
-    "healthcheckPath": "/ui",
-    "healthcheckTimeout": 100,
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 10,
+    "numReplicas": 1
   }
 } 

@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 import os
 import tempfile
@@ -8,8 +9,27 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import time
+import asyncio
+from functools import lru_cache
 
-app = FastAPI()
+app = FastAPI(title="PDF/EPUB Chunker", version="1.0.0")
+
+# Добавляем CORS для лучшей совместимости
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Кэшируем text splitter для ускорения
+@lru_cache(maxsize=1)
+def get_text_splitter(chunk_size: int, overlap: int):
+    return RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=overlap
+    )
 
 SUPPORTED_TYPES = {
     'application/pdf': 'pdf',
@@ -72,9 +92,10 @@ async def upload(
     chunk_size: int = Query(1000, gt=0),
     overlap: int = Query(100, ge=0)
 ):
+    start_time = time.time()
     print(f"Получен файл: {file.filename}, тип: {file.content_type}")
     content_type = file.content_type
-    file_ext = SUPPORTED_TYPES.get(content_type)
+    file_ext = SUPPORTED_TYPES.get(content_type or "")
     
     # Если тип не определен по MIME, пробуем по расширению
     if not file_ext:
@@ -90,8 +111,13 @@ async def upload(
     
     print(f"Определен тип файла: {file_ext}")
 
+    # Ограничиваем размер файла (50MB)
+    max_size = 50 * 1024 * 1024  # 50MB
+    content = await file.read()
+    if len(content) > max_size:
+        raise HTTPException(status_code=413, detail="Файл слишком большой. Максимальный размер: 50MB")
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_ext}') as tmp:
-        content = await file.read()
         tmp.write(content)
         tmp_path = tmp.name
         print(f"Временный файл создан: {tmp_path}, размер: {len(content)} байт")
@@ -111,22 +137,20 @@ async def upload(
         print(f"Ошибка при обработке файла: {e}")
         raise
     finally:
-        for _ in range(5):
-            try:
-                os.remove(tmp_path)
-                break
-            except PermissionError:
-                time.sleep(0.2)
+        # Удаляем временный файл
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
 
     if not text.strip():
         print("Не удалось извлечь текст из документа")
         raise HTTPException(status_code=400, detail="No text could be extracted from the document.")
 
     print(f"Разбиваем текст на чанки: chunk_size={chunk_size}, overlap={overlap}")
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=overlap
-    )
+    
+    # Используем кэшированный splitter
+    splitter = get_text_splitter(chunk_size, overlap)
     chunks = splitter.split_text(text)
     print(f"Создано чанков: {len(chunks)}")
     
@@ -137,14 +161,21 @@ async def upload(
             "content": chunk
         })
     
-    print(f"Обработка завершена. Возвращаем {len(result_chunks)} чанков")
+    processing_time = time.time() - start_time
+    print(f"Обработка завершена за {processing_time:.2f} секунд. Возвращаем {len(result_chunks)} чанков")
+    
     return JSONResponse({
         "file_name": file.filename,
         "total_chunks": len(result_chunks),
+        "processing_time": f"{processing_time:.2f}s",
         "chunks": result_chunks
     })
 
 @app.get("/ui", response_class=HTMLResponse)
 def custom_ui():
     with open("ui.html", encoding="utf-8") as f:
-        return f.read() 
+        return f.read()
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "PDF/EPUB Chunker"} 
